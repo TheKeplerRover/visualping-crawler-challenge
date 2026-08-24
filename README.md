@@ -1,8 +1,13 @@
-# Visualping crawler challenge
+# Visualping crawler
 
-Small crawler for the Visualping take-home challenge.
+This is my small crawler for the Visualping take-home challenge.
 
-## Run
+It starts from the given home page, follows same-site pages and resources, and
+looks through the response bodies for challenge passwords. It also checks a few
+less obvious places, like HTML comments, element attributes, simple JS character
+arrays, and JPEG comments.
+
+## How to run
 
 ```bash
 export VP_BASE_URL="http://challenge-host/"
@@ -11,31 +16,20 @@ export VP_PASSWORD="your-password"
 python3 crawl_visualping.py
 ```
 
-Optional limits:
+You can tune the crawl if needed:
 
 ```bash
 MAX_URLS=450 MAX_REPORT_PAGES=500 WORKERS=20 python3 crawl_visualping.py
 ```
 
-## Approach
+## What it does
 
-The crawler treats the site as a same-origin resource graph.
-
-1. Start from the homepage.
-2. Fetch every discovered same-origin resource with HTTP Basic Auth.
-3. Scan response bodies, not response headers.
-4. Extract more same-origin URLs from HTML tags, meta refresh, CSS `url(...)`, and string-like URLs in JS/text resources.
-5. Repeat until the queue is empty, or until an optional local limit is reached.
-
-It also handles the non-obvious storage patterns found during the crawl:
-
-- direct `VISUALPING{...}` text in HTML/JS;
-- HTML comments and attributes;
-- simple JS character-code arrays;
-- JPEG comment segments containing sixteen hex characters.
-
-The image-text password was confirmed separately by visual inspection of the downloaded image resource.
+- sends Basic Auth on every request;
+- follows same-origin links and referenced resources;
+- scans response bodies, not response headers;
+- pulls URLs from HTML, CSS, and simple JS/text strings;
+- keeps a visited set so the crawl stops when no new resources are found.
 
 ## Notes
 
-Credentials, the challenge URL, and the final passwords are intentionally not committed.
+The real challenge URL, credentials, and final answers are not committed.
