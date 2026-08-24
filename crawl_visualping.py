@@ -16,6 +16,8 @@ PASSWORD_RE = re.compile(rb"VISUALPING\{[0-9a-fA-F]{16}\}")
 EXAMPLE_PASSWORDS = {"VISUALPING{0000deadbeef0000}"}
 HEX16_RE = re.compile(rb"^[0-9a-fA-F]{16}$")
 INT_ARRAY_RE = re.compile(r"\[((?:\s*\d{1,3}\s*,){10,}\s*\d{1,3}\s*)\]")
+
+# Tags that can point to pages or resources a browser would load or navigate to.
 ATTR_URLS = {
     "a": ("href",),
     "area": ("href",),
@@ -44,14 +46,23 @@ class LinkParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+
+        # Collect regular HTML references like links, scripts, images, iframes,
+        # and forms. These are the main edges in the same-site resource graph.
         for attr in ATTR_URLS.get(tag.lower(), ()):
             value = attrs.get(attr)
             if value:
                 self._add_srcset(value) if attr == "srcset" else self.urls.append(value)
+
+        # A browser follows meta refresh redirects, so the crawler treats them
+        # as discoverable URLs too.
         if tag.lower() == "meta" and attrs.get("http-equiv", "").lower() == "refresh":
             match = re.search(r"url\s*=\s*([^;]+)", attrs.get("content", ""), re.I)
             if match:
                 self.urls.append(match.group(1).strip("'\" "))
+
+        # Some challenge links are tucked into attributes or small JS snippets,
+        # not only into href/src fields.
         for value in attrs.values():
             if value:
                 self.urls.extend(m.group("url") for m in URL_TEXT_RE.finditer(value))
@@ -87,6 +98,9 @@ def normalize(base, raw):
         return None
     if parsed.scheme not in {"http", "https"} or parsed.netloc != base.netloc:
         return None
+
+    # Most query params on this site are tracking noise. Keeping only page=N
+    # avoids crawling the same document many times as ref/utm/hl variants.
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     kept_query = urllib.parse.urlencode([(k, v) for k, v in query if k == "page"])
     path = re.sub(r"/index\.html$", "/", parsed.path)
@@ -115,6 +129,7 @@ def fetch(url, headers):
         with urllib.request.urlopen(req, timeout=15) as response:
             return response.status, response.getheader("content-type", ""), response.geturl(), response.read()
     except urllib.error.HTTPError as err:
+        # Error pages can still contain useful body text or links.
         return err.code, err.headers.get("content-type", ""), url, err.read()
     except Exception as exc:
         print(f"ERROR {url}: {exc}")
@@ -124,6 +139,9 @@ def fetch(url, headers):
 def discover(url, content_type, body):
     text = body.decode("utf-8", "ignore")
     urls = []
+
+    # HTML gives us structured links. JS/CSS/text are handled with simple
+    # patterns below so we also catch resources a plain <a> crawler would miss.
     if "html" in content_type or text.lstrip().lower().startswith("<!doctype html"):
         parser = LinkParser()
         parser.feed(text)
@@ -134,6 +152,8 @@ def discover(url, content_type, body):
 
 
 def jpeg_comments(body):
+    # JPEG comments are not visible page text, but they are still part of the
+    # resource body returned by the server.
     comments = []
     i = 0
     while i < len(body) - 4:
@@ -148,6 +168,9 @@ def jpeg_comments(body):
 
 def extract_passwords(body, content_type):
     candidates = {match.decode() for match in PASSWORD_RE.findall(body)}
+
+    # Some JS stores the password as character codes instead of a literal
+    # string, so decode simple numeric arrays and scan the decoded text.
     if "javascript" in content_type or "text" in content_type or "html" in content_type:
         text = body.decode("utf-8", "ignore")
         for match in INT_ARRAY_RE.finditer(text):
@@ -158,6 +181,8 @@ def extract_passwords(body, content_type):
     if "jpeg" in content_type:
         for comment in jpeg_comments(body):
             if HEX16_RE.match(comment.strip()):
+                # In the images I found, the JPEG comment was just the 16 hex
+                # characters, so wrap it in the required challenge format.
                 candidates.add(f"VISUALPING{{{comment.decode().lower()}}}")
     return sorted(candidate for candidate in candidates if candidate not in EXAMPLE_PASSWORDS)
 
@@ -175,10 +200,12 @@ def main():
     passwords = {}
 
     def crawl_one(url):
-        status, content_type, final_url, body = fetch(url, headers)
+        _status, content_type, final_url, body = fetch(url, headers)
         return url, extract_passwords(body, content_type), discover(final_url, content_type, body)
 
     while queue:
+        # Process a small batch in parallel. This keeps the code simple but
+        # avoids waiting on hundreds of small generated pages one by one.
         batch = []
         while queue and len(batch) < workers:
             url = queue.popleft()
