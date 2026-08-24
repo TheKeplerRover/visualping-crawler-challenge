@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import concurrent.futures
+import io
 import os
 import re
 import sys
@@ -184,7 +185,35 @@ def extract_passwords(body, content_type):
                 # In the images I found, the JPEG comment was just the 16 hex
                 # characters, so wrap it in the required challenge format.
                 candidates.add(f"VISUALPING{{{comment.decode().lower()}}}")
+
+    if content_type.startswith("image/"):
+        # Optional OCR path for passwords rendered as visible image text. This
+        # keeps the main crawler dependency-free, but lets it use Tesseract when
+        # Pillow + pytesseract are installed.
+        candidates.update(ocr_image_passwords(body))
     return sorted(candidate for candidate in candidates if candidate not in EXAMPLE_PASSWORDS)
+
+
+def ocr_image_passwords(body):
+    try:
+        from PIL import Image
+        import pytesseract
+    except ImportError:
+        return set()
+
+    try:
+        image = Image.open(io.BytesIO(body))
+        text = pytesseract.image_to_string(
+            image,
+            config=(
+                "--psm 6 "
+                "-c tessedit_char_whitelist=VISUALPING{}0123456789abcdefABCDEF"
+            ),
+        )
+    except Exception:
+        return set()
+
+    return {match.decode() for match in PASSWORD_RE.findall(text.encode())}
 
 
 def main():
